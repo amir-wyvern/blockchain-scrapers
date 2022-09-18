@@ -257,7 +257,7 @@ func FormingTxForInflux(
         AddTag("contractAddress", contractAddress.Hex()).
         AddTag("sender", sender.Hex()).
         AddTag("swapType", swapType).
-        AddField("value", flaotValue).
+        AddField("value", roundFloat(flaotValue,5)).
         SetTime(time.Unix(int64(blockTime), 0))
     
     writeAPI.WritePoint(point)
