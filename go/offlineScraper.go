@@ -476,7 +476,7 @@ func main() {
     }
 
     CLIENT, _ = ethclient.Dial("https://bsc-dataseed.binance.org")
-    influxToken := os.Getenv("TOKEN") 
+    influxToken := os.Getenv("INFLUX_TOKEN") 
     INFLUX_CLI = influxdb2.NewClient(influxUrl, influxToken ) 
     wg := &sync.WaitGroup{}
 
