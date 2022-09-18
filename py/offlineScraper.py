@@ -3,7 +3,7 @@ from influxdb_client.client.write_api import ASYNCHRONOUS
 from concurrent.futures import ThreadPoolExecutor
 from web3.middleware import geth_poa_middleware
 from contracts import load_contracs
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 from datetime import datetime
 from web3 import Web3
 import logging
@@ -290,13 +290,13 @@ if __name__ == '__main__':
         abi=contracts['router']['abi']
     )
 
-    load_dotenv("../.env")
+    load_dotenv(find_dotenv())
 
     org = 'org'
     bucket = 'BSC_Scraping'
     url = 'http://localhost:8086'
     token = os.getenv('INFLUX_TOKEN')
-
+    
     startBlock = 21061407
     lastBlock = 21161407
     workers = 10

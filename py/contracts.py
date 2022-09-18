@@ -3,7 +3,7 @@ import glob
 
 def load_contracs():
     ls_contracts = {}
-    for _file in glob.glob('../abi/contract-*.json'):
+    for _file in glob.glob('abi/contract-*.json'):
         with open(_file ,'r') as fi :
             fileData = json.load(fi)
             ls_contracts[fileData['name']] = fileData
