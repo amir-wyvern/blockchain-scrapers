@@ -2,19 +2,20 @@ package main
 
 import (
     "github.com/influxdata/influxdb-client-go/v2"
-    "github.com/ethereum/go-ethereum/accounts/abi"  
+	"github.com/ethereum/go-ethereum/accounts/abi"  
     "github.com/ethereum/go-ethereum/core/types"
     "github.com/ethereum/go-ethereum/ethclient"
-    "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common"
     "github.com/thedevsaddam/iter"
     "github.com/joho/godotenv"
-    "encoding/json"
-    "io/ioutil"
+	"encoding/json"
+	"io/ioutil"
     "math/big"
     "context"
     "bytes"
     "sync"
     "time"
+    "math"
     "fmt"
     "log"
     "os"
@@ -83,7 +84,6 @@ func GetContractABI() *abi.ABI {
 
 	return &contractABI
 }
-
 func DecodeTransactionInputData(contractABI *abi.ABI, data []byte) map[string]interface{} {
 	
     methodSigData := data[:4]
@@ -97,6 +97,21 @@ func DecodeTransactionInputData(contractABI *abi.ABI, data []byte) map[string]in
 		log.Fatal(err)
 	} 
 	return inputsMap
+}
+func AddToBlackList(tx *types.Transaction) {
+
+    key4Byte := [4]byte{tx.Data()[0], tx.Data()[1], tx.Data()[2], tx.Data()[3]}
+    txForm, _ := FormingTx(key4Byte)
+    
+    if txForm.TxType == "swap" {
+        inputABI := DecodeTransactionInputData(CONTRACT_ABI, tx.Data()) 
+        for _, address := range inputABI["path"].([]common.Address) {
+            BLACK_LIST_ADDRESS.Store(address, true)
+        }
+
+    } else {
+        BLACK_LIST_ADDRESS.Store(txForm.ContractAddress(tx), true)
+    }
 }
 
 // ============= ReviewTx
@@ -115,26 +130,19 @@ func SpinupWorkerForReviewTx(
     filterTx := func(txWithBlockTime StructTxPipline) {
 
         tx := txWithBlockTime.tx
-        key4Byte := [4]byte{tx.Data()[0], tx.Data()[1], tx.Data()[2], tx.Data()[3]} 
-        
-        txForm, _ := FormingTx(key4Byte)
-        contactAddress := txForm.ContractAddress(tx)
 
-        if contactAddress != NONE_ADDRESS  {
-            fmt.Println("========================== : " ,txWithBlockTime.tx.Hash().Hex())
+        if HasInMap(tx, WHITE_LIST_ADDRESS) {
             TxPipline <- txWithBlockTime
 
         }else {
-            _, exist := BLACK_LIST_ADDRESS.Load(contactAddress)
-            if !exist {
-                fmt.Println("!!!!!!!!!!!!!!!!!!!! : " ,txWithBlockTime.tx.Hash().Hex())
-                BLACK_LIST_ADDRESS.Store(contactAddress, true)
+            if !HasInMap(tx, BLACK_LIST_ADDRESS) {
+                AddToBlackList(tx)
             }
         }
     }
     conditionOpenChanal := func(txBlockNumber uint64)bool {
         mutexCurrentBlockNumber.Lock()
-        condition := txBlockNumber - currentBlockNumber >= constDiffNumberOfBlocks
+        condition := (currentBlockNumber - constDiffNumberOfBlocks) >= txBlockNumber 
         mutexCurrentBlockNumber.Unlock()
 
         return condition
@@ -143,7 +151,6 @@ func SpinupWorkerForReviewTx(
 
         filterTx(txWithBlockTime)
         nextTxWithBlockTime := txWithBlockTime
-        // var nextTxWithBlockTime StructTxPipline
         for txWithBlockTime := range reviewTxPipline { 
             if conditionOpenChanal(txWithBlockTime.blockNumber){
                 filterTx(txWithBlockTime)
@@ -162,13 +169,11 @@ func SpinupWorkerForReviewTx(
             mutexCurrentBlockNumber.Lock()
             currentBlockNumber = blockNumber
             mutexCurrentBlockNumber.Unlock()
-            // fmt.Println("block current : " ,x)
         }
     }()
 
     go func() {
 
-        // var txWithBlockTime StructTxPipline
         txWithBlockTime := <-reviewTxPipline
         for true{
             if conditionOpenChanal(txWithBlockTime.blockNumber) {
@@ -228,63 +233,90 @@ func ExtractAddressFromSwap(tx *types.Transaction) common.Address {
     return contactAddress
 }
 
+func roundFloat(val float64, precision uint) float64 {
+    ratio := math.Pow(10, float64(precision))
+    return math.Round(val*ratio) / ratio
+}
+
 func FormingTxForInflux(
     mem string,
     contractAddress common.Address,
     sender common.Address,
     swapType string,
-    amount float32,
-    time time.Time ) {
-    
+    value *big.Int,
+    blockTime uint64 ) {
+    _ = value
+
+    tenToPower18 := new(big.Float).SetInt(big.NewInt(int64(math.Pow(10, 18))) )
+    bigFlaotValue := new(big.Float).Quo(new(big.Float).SetInt(value), tenToPower18)
+    flaotValue, _ := bigFlaotValue.Float64()
+
     writeAPI := INFLUX_CLI.WriteAPI("org", "BSC_Scraping")
     point :=influxdb2.NewPointWithMeasurement(mem).
         AddTag("contractAddress", contractAddress.Hex()).
         AddTag("sender", sender.Hex()).
         AddTag("swapType", swapType).
-        AddField("amount", amount).
-        SetTime(time)
+        AddField("value", flaotValue).
+        SetTime(time.Unix(int64(blockTime), 0))
     
     writeAPI.WritePoint(point)
 }
 
+func HasInMap(tx *types.Transaction, Map sync.Map) bool {
+
+    key4Byte := [4]byte{tx.Data()[0], tx.Data()[1], tx.Data()[2], tx.Data()[3]}
+
+    txForm, _ := FormingTx(key4Byte)
+    
+    if txForm.TxType == "swap" {
+        inputABI := DecodeTransactionInputData(CONTRACT_ABI, tx.Data()) 
+        for _, address := range inputABI["path"].([]common.Address) {
+            _, exist := Map.Load(address)
+            if exist{
+                return true
+            }
+        }
+        return false
+
+    } else {
+        _, exist := Map.Load(txForm.ContractAddress(tx))
+        return exist
+    }
+}
 type TxFunctions struct {
-    SendToInflux func(string,common.Address,common.Address,string,float32,time.Time)
     ContractAddress func(*types.Transaction)common.Address
     ValueAndSwapType map[[4]byte]interface{}
-    txType string
+    TxType string
 }
 func FormingTx(key4Byte [4]byte) (TxFunctions, bool) {
     
-    formResponse := TxFunctions{
-        SendToInflux: FormingTxForInflux,
-    }
-
+    formResponse := TxFunctions{}
     if SWAP[key4Byte] != nil {
 
         formResponse.ContractAddress = ExtractAddressFromSwap
         formResponse.ValueAndSwapType = SWAP
-        formResponse.txType = "swap"
+        formResponse.TxType = "swap"
         return formResponse, false
         
     } else if CREATE[key4Byte] != nil {
         
         formResponse.ContractAddress = ExtractAddressFromCreate
         formResponse.ValueAndSwapType = CREATE
-        formResponse.txType = "create"
+        formResponse.TxType = "create"
         return formResponse, false
 
     } else if ADD_LIQ[key4Byte] != nil {
         
         formResponse.ContractAddress = ExtractAddressFromAddLiqudity
         formResponse.ValueAndSwapType = ADD_LIQ
-        formResponse.txType = "addLiquidity"
+        formResponse.TxType = "addLiquidity"
         return formResponse, false
     
     } else if REMOVE_LIQ[key4Byte] != nil {
         
         formResponse.ContractAddress = ExtractAddressFromRemoveLiqudity
         formResponse.ValueAndSwapType = REMOVE_LIQ
-        formResponse.txType = "removeLiquidity"
+        formResponse.TxType = "removeLiquidity"
         return formResponse, false
 
     } else {
@@ -300,34 +332,41 @@ func AnalyzeTx(txWithBlockTime StructTxPipline, reviewTxPipline chan StructTxPip
     txForm, err := FormingTx(key4Byte)
 
     if !err {
-        // sender, _ := types.Sender(types.NewEIP155Signer(tx.ChainId()), tx)
-        value, _ := txForm.ValueAndSwapType[key4Byte].(func(*big.Int, *types.Transaction)(*big.Int,string))(tx.Value(), tx)
-        
+        sender, _ := types.Sender(types.NewEIP155Signer(tx.ChainId()), tx)
+        value, swapType := txForm.ValueAndSwapType[key4Byte].(func(*big.Int, *types.Transaction)(*big.Int,string))(tx.Value(), tx)
         if key4Byte == [4]byte{0x60, 0x80, 0x60, 0x40} {
             receipt, _ := CLIENT.TransactionReceipt(context.Background(), tx.Hash())
             if IsContainTopicsHash(receipt.Logs) {
-
+                
                 WHITE_LIST_ADDRESS.Store(receipt.ContractAddress, true)
-                // txForm.FormingTxForInflux(txForm.txType ,...)
+                FormingTxForInflux(
+                    txForm.TxType,
+                    receipt.ContractAddress,
+                    sender,
+                    swapType,
+                    value,
+                    txWithBlockTime.blockTime,
+                )
             }
 
         } else {
-            contractAddress := txForm.ContractAddress(tx)
-            _, exist := WHITE_LIST_ADDRESS.Load(contractAddress)
-            if exist {
-                fmt.Println(txForm.txType , " : " ,value)
-                // txForm.FormingTxForInflux(txForm.txType,...)
-            } else {
-                _, exist := BLACK_LIST_ADDRESS.Load(contractAddress)
-                if !exist {
+            if HasInMap(tx, WHITE_LIST_ADDRESS) {                
+                FormingTxForInflux(
+                    txForm.TxType,
+                    txForm.ContractAddress(tx),
+                    sender,
+                    swapType,
+                    value,
+                    txWithBlockTime.blockTime,
+                )
+
+            } else if !HasInMap(tx, BLACK_LIST_ADDRESS){
                     reviewTxPipline <- txWithBlockTime
-                }
             }
         }
     }
-    
 }
-
+    
 func IsContainTopicsHash(logs []*types.Log) bool {
     for _, log := range logs {
         for _, topic := range log.Topics {
@@ -357,15 +396,12 @@ func SpinupWorkerForGetTx(count uint32, txPipline <-chan StructTxPipline, review
 func GetBlockNumber(number uint64) (types.Transactions, uint64) {
 
     fmt.Printf("> %d \n", number)
-
     blockNumber := big.NewInt(int64(number))
     block, err := CLIENT.BlockByNumber(context.Background(), blockNumber)
 
     if err != nil {
         log.Fatal(err)
     }
-
-    fmt.Printf( "<%d \n" ,block.Number().Uint64())
 
     return block.Transactions(), block.Header().Time
 }
@@ -392,7 +428,7 @@ func SpinupWorkerForGetBlock(
     txPipline chan StructTxPipline,
     currentBlockNumberPipline chan uint64,
     wg *sync.WaitGroup,) {
-
+    
     for i := uint32(0); i < count; i++ {
         wg.Add(1)
         go func () {
@@ -405,21 +441,19 @@ func SpinupWorkerForGetBlock(
         }()
     }
 }
+
 // ============= end
-
-
-
 func main() {
 
     startTime := time.Now()
-    
+
     err := godotenv.Load()
     if err != nil {
       log.Fatal("Error loading .env file")
     }
     
     CLIENT, _ = ethclient.Dial("https://bsc-dataseed.binance.org")
-    influxToken := os.Getenv("TOEKN") 
+    influxToken := os.Getenv("TOKEN") 
     INFLUX_CLI = influxdb2.NewClient("http://localhost:8086", influxToken ) 
 
     wg := &sync.WaitGroup{}
@@ -430,19 +464,20 @@ func main() {
     txPipline := make(chan StructTxPipline)
     currentBlockNumberPipline := make(chan uint64)
     
-
+    
     SpinupWorkerForGetBlock(WORKER_NUMBER, blockNumberPipline, txPipline, currentBlockNumberPipline, wg) 
     getTxWorkerNumber := uint32(2)
     if WORKER_NUMBER > 20 {getTxWorkerNumber = WORKER_NUMBER / 10 }
     SpinupWorkerForGetTx(getTxWorkerNumber, txPipline, reviewTxPipline) 
     SpinupWorkerForReviewTx(1, txPipline, reviewTxPipline, currentBlockNumberPipline) 
     
+    currentBlockNumberPipline <- 21061418
     for i := range iter.N(21061418,21071407) {
         blockNumberPipline <- uint64(i)
     }
 
     close(blockNumberPipline)
     wg.Wait()
-    fmt.Printf("Binomial took %s", time.Since(startTime))
+    fmt.Printf("Scraping took %s", time.Since(startTime))
 
 }
