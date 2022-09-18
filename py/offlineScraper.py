@@ -2,7 +2,7 @@ from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import ASYNCHRONOUS
 from concurrent.futures import ThreadPoolExecutor
 from web3.middleware import geth_poa_middleware
-from utils.contracts import load_contracs
+from contracts import load_contracs
 from dotenv import load_dotenv
 from datetime import datetime
 from web3 import Web3
@@ -290,7 +290,7 @@ if __name__ == '__main__':
         abi=contracts['router']['abi']
     )
 
-    load_dotenv()
+    load_dotenv("../.env")
 
     org = 'org'
     bucket = 'BSC_Scraping'
