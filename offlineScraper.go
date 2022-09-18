@@ -15,6 +15,7 @@ import (
     "bytes"
     "sync"
     "time"
+    "flag"
     "math"
     "fmt"
     "log"
@@ -29,7 +30,7 @@ var BLACK_LIST_ADDRESS sync.Map
 var CLIENT *ethclient.Client
 var NUMBER_TX_IN_BLOCK uint32 = 20
 var NUMBER_WAIT_PERIOD uint32 = 2
-var WORKER_NUMBER uint32 = 100
+var WORKER_NUMBER uint32 = 1
 
 var CREATE = map[[4]byte]interface{} {
     [4]byte{0x60, 0x80, 0x60, 0x40} : func (_ *big.Int, tx *types.Transaction)(*big.Int,string){return big.NewInt(0), ""},
@@ -56,9 +57,9 @@ var REMOVE_LIQ = map[[4]byte]interface{} {
 var CONTRACT_ABI = GetContractABI()
 func GetContractABI() *abi.ABI {
 
-	jsonFile, err := os.Open("contract-router-pancake.json")
+	jsonFile, err := os.Open("abi/contract-router-pancake.json")
 
-	if err != nil {
+    if err != nil {
         fmt.Println(err)
     }
     defer jsonFile.Close()
@@ -452,10 +453,31 @@ func main() {
       log.Fatal("Error loading .env file")
     }
     
+
+    arg1 := flag.Uint64("start", 0,"# End block number")
+    arg2 := flag.Uint64("worker", 1,"# Worker number ")
+    arg3 := flag.Uint64("end", 0,"# Start block number ")
+    arg4 := flag.String("influx", "http://localhost:8086","# URL influxdb")
+    
+    flag.Parse()
+
+    startBlock := *arg1
+    WORKER_NUMBER := uint32(*arg2)
+    endBlock := *arg3
+    influxUrl :=*arg4
+
+    if startBlock == 0 && endBlock == 0{
+        log.Fatal("start & end flags is empty\nuse --help for flags")
+        return
+    }
+    if endBlock <= startBlock {
+        log.Fatal("The end block cannot be less than the start block")
+        return
+    }
+
     CLIENT, _ = ethclient.Dial("https://bsc-dataseed.binance.org")
     influxToken := os.Getenv("TOKEN") 
-    INFLUX_CLI = influxdb2.NewClient("http://localhost:8086", influxToken ) 
-
+    INFLUX_CLI = influxdb2.NewClient(influxUrl, influxToken ) 
     wg := &sync.WaitGroup{}
 
     blockNumberPipline := make(chan uint64)
@@ -466,13 +488,13 @@ func main() {
     
     
     SpinupWorkerForGetBlock(WORKER_NUMBER, blockNumberPipline, txPipline, currentBlockNumberPipline, wg) 
-    getTxWorkerNumber := uint32(2)
+    getTxWorkerNumber := uint32(1)
     if WORKER_NUMBER > 20 {getTxWorkerNumber = WORKER_NUMBER / 10 }
     SpinupWorkerForGetTx(getTxWorkerNumber, txPipline, reviewTxPipline) 
     SpinupWorkerForReviewTx(1, txPipline, reviewTxPipline, currentBlockNumberPipline) 
     
-    currentBlockNumberPipline <- 21061418
-    for i := range iter.N(21061418,21071407) {
+    currentBlockNumberPipline <- startBlock
+    for i := range iter.N(int(startBlock),int(endBlock)) {
         blockNumberPipline <- uint64(i)
     }
 
