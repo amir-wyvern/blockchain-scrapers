@@ -57,7 +57,7 @@ var REMOVE_LIQ = map[[4]byte]interface{} {
 var CONTRACT_ABI = GetContractABI()
 func GetContractABI() *abi.ABI {
 
-	jsonFile, err := os.Open("abi/contract-router-pancake.json")
+	jsonFile, err := os.Open("../abi/contract-router-pancake.json")
 
     if err != nil {
         fmt.Println(err)
@@ -448,7 +448,7 @@ func main() {
 
     startTime := time.Now()
 
-    err := godotenv.Load()
+    err := godotenv.Load("../.env")
     if err != nil {
       log.Fatal("Error loading .env file")
     }
