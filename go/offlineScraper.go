@@ -475,11 +475,16 @@ func main() {
         return
     }
 
-    CLIENT, _ = ethclient.Dial("https://bsc-dataseed.binance.org")
-    influxToken := os.Getenv("INFLUX_TOKEN") 
-    INFLUX_CLI = influxdb2.NewClient(influxUrl, influxToken ) 
-    wg := &sync.WaitGroup{}
+    influxToken := os.Getenv("INFLUX_TOKEN")
+    if influxToken == "" {
+        log.Fatal("variable INFLUX_TOKEN in .env file have to data")
+        return
+    }
 
+    CLIENT, _ = ethclient.Dial("https://bsc-dataseed.binance.org")
+    INFLUX_CLI = influxdb2.NewClient(influxUrl, influxToken ) 
+
+    wg := &sync.WaitGroup{}
     blockNumberPipline := make(chan uint64)
     chanleSize := NUMBER_TX_IN_BLOCK * WORKER_NUMBER * (NUMBER_WAIT_PERIOD + 1)
     reviewTxPipline := make(chan StructTxPipline, chanleSize)
